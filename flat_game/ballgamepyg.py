@@ -2,17 +2,19 @@ import pygame
 import numpy as np
 import math
 import gym
+import torch
+import random
+
 import os
 from nn import Neural_net as NN
-
-#random.seed(4)
-_screen_height = 1088
-_screen_width = 1482
+random.seed(4)
+_screen_height = 500
+_screen_width = 500
 _stripobsx = 0
 _stripobsy = 20
-_stripgoalx = 500
+_stripgoalx = 470
 _stripgoaly = 20
-_stripagentx = 500
+_stripagentx = 480
 _stripagenty = 10
 _max_agent_speed = 5
 weights = [1,1,1,1]
@@ -38,16 +40,20 @@ class Obstacle:
 
 class createBoardIRL():
 
-    def __init__(self, number_of_actions = 4 , hidden_layers = [256 , 256] ,number_of_height = _screen_height , weights = weights ,  width = _screen_width , agent_radius = 10 , static_obstacles = 10 , dynamic_obstacles = 0 , static_obstacle_radius = 10 , dynamic_obstacle_radius = 0 , obstacle_speed_list = []):
+    def __init__(self, saved_model = None, display = False ,number_of_actions = 4 , hidden_layers = [256 , 256] ,number_of_height = _screen_height , weights = weights ,  width = _screen_width , agent_radius = 10 , static_obstacles = 20 , dynamic_obstacles = 0 , static_obstacle_radius = 10 , dynamic_obstacle_radius = 0 , obstacle_speed_list = []):
 
         self.clock = pygame.time.Clock()
-        self.rewardWeights = weights
-        self.display = True
+        self.rewardWeights = weights  #numpy array
+        self.display = display
         self.gameExit = False
         self.height = _screen_height
         self.width = _screen_width
         self.agent_radius = agent_radius
-        self.agentBrain = None
+
+
+        self.sensorArraysize = 44
+
+
         self.size_action_space = number_of_actions
 
 
@@ -78,11 +84,21 @@ class createBoardIRL():
         self.obstacle_list = []
         self.sensor_readings = None #numpy array
 
+        if saved_model==None:
+            self.agentBrain = NN(self.sensorArraysize , self.hidden_layers,self.size_action_space)
+            self.agentBrain.cuda()
+        else:
+            self.agentBrain = NN(self.sensorArraysize , self.hidden_layers,self.size_action_space)
+            self.agentBrain.load_state_dict(torch.load(saved_model))
+            self.agentBrain.eval()
+            self.agentBrain.cuda()
+
     #state : list
     #state[0] - tuple containing agent current position
     #state[1] - tuple containing goal position.
     #state[2] - distance from goal
-    #state[3 - end] - tuple obstacle position
+    #state[3] - done?
+    #state[4 - end] - tuple obstacle position
 
 
         self.state = None
@@ -95,7 +111,7 @@ class createBoardIRL():
         self.blue = (0,0,255)
         self.black = (0,0,0)
         self.caption = 'social navigation world'
-
+        print "initialization done."
 
     def calculate_distance(self, tup1, tup2):
         x_diff = tup1[0] - tup2[0]
@@ -130,7 +146,7 @@ class createBoardIRL():
     def state_to_sensorReadings(self):
 
         sensor_readlist = []
-        obstacle_info = self.state[3:]
+        #obstacle_info = self.state[3:]
         closest_obs_dist , rel_vel = self.calculateDistanceFromClosestObstacle()
         sensor_readlist.append(rel_vel[0])
         sensor_readlist.append(rel_vel[1])
@@ -233,11 +249,14 @@ class createBoardIRL():
         return (0, 0)
 
 
+
+    #returns the action that has the highest qvalue
     def gen_action_from_agent(self):
+
 
         action = self.agentBrain(self.sensor_readings)
 
-        action = action.detach().numpy()
+        action = action.cpu().detach().numpy()
         return np.argmax(action)
 
 
@@ -287,7 +306,7 @@ class createBoardIRL():
                 agent_y = self.generate_randomval(0, _stripagenty)
             else:
                 break
-        self.state = [(agent_x, agent_y), (self.goal_x, self.goal_y), dist]
+        self.state = [(agent_x, agent_y), (self.goal_x, self.goal_y), dist , 0] #0 - not done /1 - done
         # print('PPPP',self.total_obstacles)
         self.agent_x = agent_x
         self.agent_y = agent_y
@@ -319,7 +338,7 @@ class createBoardIRL():
         self.total_distance = self.calculate_distance(self.state[0], self.state[1])
 
         self.sensor_readings = self.state_to_sensorReadings()
-        self.agentBrain = NN(self.state_to_sensorReadings().size , self.hidden_layers,self.size_action_space)
+        #self.agentBrain = NN(self.state_to_sensorReadings().size , self.hidden_layers,self.size_action_space)
 
         return np.array(self.state)
 
@@ -362,10 +381,14 @@ class createBoardIRL():
             newy = 0
         if newy > _screen_height:
             newy = _screen_height
-        self.state[0] = (newx, newy)
+        self.state[0] = (newx, newy) #update the position of the agent
+        self.state[2] = self.calculate_distance(self.state[0] , self.state[1])#update the distance of the agent
+
         self.agent_x = self.state[0][0]
         self.agent_y = self.state[0][1]
         reward, done = self.calc_reward()
+        if done:
+            self.state[3] = 1 #episode done. Hit an obstacle or reached goal
         # print self.state[0]
         self.agent_x_vel = self.agent_x - old_x
         self.agent_y_vel = self.agent_y - old_y
@@ -384,7 +407,7 @@ class createBoardIRL():
             obs.vel_y = (y/magnitude)*obs.speed
             obs.y = obs.y + obs.vel_y
 
-            self.state[3+len(self.no_static_obstacles)] = (obs.x , obs.y)
+            self.state[4+len(self.no_static_obstacles)] = (obs.x , obs.y)
 
 
         self.sensor_readings = self.state_to_sensorReadings()
@@ -393,10 +416,38 @@ class createBoardIRL():
 
         return np.array(self.state), reward, done, {}
 
+    def calc_reward(self):
+        done = False
+        for obs in self.obstacle_list:
 
+            done = self.check_overlap(self.state[0], (obs.x, obs.y))
+            if done:
+                return -1, done
+
+        if self.calculate_distance(self.state[0], self.state[1]) < self.goal_threshold:
+
+            done = True
+            reward = np.dot(self.rewardWeights , self.sensor_readings)
+            self.total_reward_accumulated += reward
+
+            return reward, done
+
+        else:
+            cur_dist = self.calculate_distance(self.state[0], self.state[1])
+
+            diff_dist = self.old_dist - cur_dist
+            reward = np.dot(self.rewardWeights , self.sensor_readings)
+            self.total_reward_accumulated += reward
+            return reward, done
+
+        return -1 , done
     # -1 if it hits an obstacle or fraction of the distance it travels towards
     # the goal with a total of 1 when it reaches the goal
 
+    def quit_game(self):
+
+        pygame.quit()
+'''
     def calc_reward(self):
         done = False
         for obs in self.obstacle_list:
@@ -420,11 +471,12 @@ class createBoardIRL():
             reward = diff_dist / self.total_distance
             self.total_reward_accumulated += reward
             return reward, done
+'''
 
 
 if __name__ == '__main__':
     print "ddd"
-    cb = createBoardIRL(weights=[1,2,3,4])
+    cb = createBoardIRL(weights=np.random.rand(44))
     for i in range(100):
         print "Here"
         cb.reset()
@@ -434,13 +486,14 @@ if __name__ == '__main__':
             #action = cb.take_action_from_user()
             action = cb.gen_action_from_agent()
             action = cb.agent_action_to_WorldAction(action)
-            print action
-            print cb.sensor_readings
+            #print action
+            #print cb.sensor_readings
             state ,reward ,done , _ = cb.step(action)
+            #print reward
             if done:
                 break
-        print reward
-        print cb.total_reward_accumulated
+        #print reward
+        #print cb.total_reward_accumulated
 
     pygame.quit()
 

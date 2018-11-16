@@ -1,21 +1,39 @@
-from flat_game import carmunk
 import numpy as np
 import random
 import csv
-from nn import neural_net, LossHistory
+from nn import Neural_net as neural_net
 import os.path
 import timeit
 
-NUM_INPUT = 8 
+import torch.optim as optim
+import torch.nn as NN
+import torch
+from flat_game import ballgamepyg as BE
+NUM_INPUT = 44
 GAMMA = 0.9  # Forgetting.
 TUNING = False  # If False, just use arbitrary, pre-selected params.
 TRAIN_FRAMES = 100000 # to train for 100K frames in total
 
-def train_net(model, params, weights, path, trainFrames, i):
+import playing
 
+
+
+
+#In my code the model is not an external module rather a part of the game environment itself, called the agentBrain
+
+#Either you create a model from scratch and train it. Or load a model. If you have a pretrained model send in the filepath
+#and the model should be read into the ballgamepyg.createboardIRL.agentBrain on initialization.
+
+#might be subject to change, if things become to difficult
+
+#model = path to model or none if there is no model
+
+def train_net(model_path, params, weights, path, trainFrames,i):
+
+    print "start Training . . ."
     filename = params_to_filename(params)
 
-    observe = 1000  # Number of frames to observe before training.
+    observe = 100  # Number of frames to observe before training.
     epsilon = 1
     train_frames = trainFrames  # Number of frames to play. 
     batchSize = params['batchSize']
@@ -30,12 +48,20 @@ def train_net(model, params, weights, path, trainFrames, i):
 
     loss_log = []
 
+
+
+    #Make changes here - read from a file
     # Create a new game instance.
-    game_state = carmunk.GameState(weights)
+    game = BE.createBoardIRL(saved_model=model_path , weights = weights)
 
+    criterion = NN.MSELoss()
+    optimizer = optim.RMSprop(game.agentBrain.parameters() , lr = .001)
     # Get initial state by doing nothing and getting the state.
-    _, state, temp1 = game_state.frame_step((2))
+    #_, state, temp1 = game_state.frame_step((2))
+    game.reset()
 
+    #after this point state is referred to as the sensor_readings
+    state = game.sensor_readings
     # Let's time it.
     start_time = timeit.default_timer()
 
@@ -45,20 +71,30 @@ def train_net(model, params, weights, path, trainFrames, i):
         t += 1
         car_distance += 1
 
-        # Choose an action.
+        # Choose an action. so, as long as t < observe we take random actions?
         if random.random() < epsilon or t < observe:
-            action = np.random.randint(0, 3)  # random #3
+            actionIndex = np.random.randint(0, 3)  # random #3
+            action = game.agent_action_to_WorldAction(actionIndex)
         else:
             # Get Q values for each action.
-            qval = model.predict(state, batch_size=1)
-            action = (np.argmax(qval))  # best
+
+            actionIndex = game.gen_action_from_agent()
+
+            # *** agent_action_to_WorldAction() **** converts the action(which is basically an index that points to the action with the best qvalue according to the neural net)
+
+            # *** to an action that is actually used in the game environment. An (x,y) tuple, which depicts the movement of the agent in the game environment
+
+             #  action [2]   ---- > action [(3,4)]
+            action = game.agent_action_to_WorldAction(actionIndex)
+            #qval = model.predict(state, batch_size=1)
+            #action = (np.argmax(qval))  # this step is already done in the method : gen_action_from_agent()
             #print ("action under learner ", action)
 
         # Take action, observe new state and get our treat.
-        reward, new_state, temp2 = game_state.frame_step(action)
-
+        new_state,reward, done, _ = game.step(action)
+        new_state = game.sensor_readings
         # Experience replay storage.
-        replay.append((state, action, reward, new_state))
+        replay.append((state, actionIndex, reward, new_state))
 
         # If we're done observing, start training.
         if t > observe:
@@ -68,18 +104,42 @@ def train_net(model, params, weights, path, trainFrames, i):
                 replay.pop(0)
 
             # Randomly sample our experience replay memory
+            #print len(replay) , batchSize
             minibatch = random.sample(replay, batchSize)
 
             # Get training values.
-            X_train, y_train = process_minibatch(minibatch, model)
+            X_train, y_train = process_minibatch(minibatch, game.agentBrain) #instead of the model
 
+
+            #print "Printing from train and test in learning.py :"
+            #print type(X_train) , X_train.size
+            #print type(y_train) , y_train.size
             # Train the model on this batch.
-            history = LossHistory()
-            model.fit(
-                X_train, y_train, batch_size=batchSize,
-                nb_epoch=1, verbose=0, callbacks=[history]
-            )
-            loss_log.append(history.losses)
+            #history = LossHistory()
+
+
+            y_train = torch.from_numpy(y_train)
+
+            y_train = y_train.type(torch.cuda.FloatTensor)
+            #chagnes to be done from here
+            #change the train method from keras to pytorch
+
+
+            optimizer.zero_grad()
+
+
+            #X_train has to be a tensor of size n x 44 x 1
+            #y_train has to be a tensor of size n x 1 x 1 ??
+
+
+            output = game.agentBrain(X_train)
+            loss = criterion(output , y_train)
+
+            loss.backward()
+            #print loss.item()
+            #print type(loss.item())
+            optimizer.step()
+            loss_log.append([t,loss.item()])
 
         # Update the starting state with S'.
         state = new_state
@@ -89,9 +149,9 @@ def train_net(model, params, weights, path, trainFrames, i):
             epsilon -= (1/train_frames)
 
         # We died, so update stuff.
-        if state[0][7] == 1:
+        if done == True:
             # Log the car's distance at this T.
-            data_collect.append([t, car_distance])
+            data_collect.append([t, car_distance , ])
 
             # Update max.
             if car_distance > max_car_distance:
@@ -111,58 +171,75 @@ def train_net(model, params, weights, path, trainFrames, i):
 
         # Save the model 
         if t % train_frames == 0:
-            model.save_weights('saved-models_'+ path +'/evaluatedPolicies/'+str(i)+'-'+ filename + '-' +
-                               str(t) + '.h5',
-                               overwrite=True)
+
+            #game.agentBrain.save_weights('saved-models_'+ path +'/evaluatedPolicies/'+str(i)+'-'+ filename + '-' +
+             #                  str(t) + '.h5',
+             #                  overwrite=True)
+            torch.save(game.agentBrain.state_dict(),'saved-models_'+ path +'/evaluatedPolicies/'+str(i)+'-'+ filename + '-' + str(t) + '.h5', )
+            with open('results/model_paths.txt','w') as ff:
+                ff.write('saved-models_'+ path +'/evaluatedPolicies/'+str(i)+'-'+ filename + '-' + str(t) + '.h5\n')
+                ff.close()
             print("Saving model %s - %d" % (filename, t))
 
     # Log results after we're done all frames.
-    log_results(filename, data_collect, loss_log)
+    log_results(filename, data_collect, loss_log,i)
+    print "Testing the model :"
 
 
 
-def log_results(filename, data_collect, loss_log):
+
+def log_results(filename, data_collect, loss_log,i):
     # Save the results to a file so we can graph it later.
-    with open('results/sonar-frames/learn_data-' + filename + '.csv', 'w') as data_dump:
+    with open('results/sonar-frames/learn_data-' + filename +'_'+str(i)+ '.csv', 'w') as data_dump:
         wr = csv.writer(data_dump)
         wr.writerows(data_collect)
 
-    with open('results/sonar-frames/loss_data-' + filename + '.csv', 'w') as lf:
+    with open('results/sonar-frames/loss_data-' + filename +'_'+str(i)+ '.csv', 'w') as lf:
         wr = csv.writer(lf)
+        print loss_log
+        print type(loss_log)
         for loss_item in loss_log:
             wr.writerow(loss_item)
 
 
 def process_minibatch(minibatch, model):
+    #here the model is the game.agentBrain
     """This does the heavy lifting, aka, the training. It's super jacked."""
     X_train = []
     y_train = []
+    #print "Starting process_minibatch method. . ."
     # Loop through our batch and create arrays for X and y
     # so that we can fit our model at every step.
     for memory in minibatch:
         # Get stored values.
         old_state_m, action_m, reward_m, new_state_m = memory
         # Get prediction on old state.
-        old_qval = model.predict(old_state_m, batch_size=1)
+        old_qval = model(old_state_m)
         # Get prediction on new state.
-        newQ = model.predict(new_state_m, batch_size=1)
+        newQ = model(new_state_m)
         # Get our best move. I think?
+        #print "The newQ :", newQ
+
+
+        newQ = newQ.cpu().detach().numpy()
+        #print type(newQ)
         maxQ = np.max(newQ)
-        y = np.zeros((1, 3)) #3
+        y = np.zeros((1, 4)) #3
+        old_qval = old_qval.cpu().detach().numpy()
         y[:] = old_qval[:]
         # Check for terminal state.
         #if reward_m != -500:  # non-terminal state
             #update = (reward_m + (GAMMA * maxQ))
         #else:  # terminal state
             #update = reward_m
-        if new_state_m[0][7] == 1:  #terminal state
+        if new_state_m[4] == 1:
             update = reward_m
         else:  # non-terminal state
             update = (reward_m + (GAMMA * maxQ))
         # Update the value for the action we took.
         y[0][action_m] = update
         X_train.append(old_state_m.reshape(NUM_INPUT,))
-        y_train.append(y.reshape(3,)) #3
+        y_train.append(y.reshape(4,)) #3
 
     X_train = np.array(X_train)
     y_train = np.array(y_train)
@@ -190,6 +267,18 @@ def launch_learn(params):
     else:
         print("Already tested.")
 
+
+def get_saved_modelFilename():
+    nn_param = [164, 150]
+    params = {
+        "batchSize": 100,
+        "buffer": 50000,
+        "nn": nn_param
+    }
+    return params_to_filename(params)
+
+
+
 def IRL_helper(weights, path, trainFrames, i):
     nn_param = [164, 150]
     params = {
@@ -197,8 +286,12 @@ def IRL_helper(weights, path, trainFrames, i):
         "buffer": 50000,
         "nn": nn_param
     }
-    model = neural_net(NUM_INPUT, nn_param)
-    train_net(model, params, weights, path, trainFrames, i)
+    ####model = neural_net(NUM_INPUT, nn_param , num_actions=4)
+
+    #train_net() - the first parameter used to be the model, but now as because the model
+    # is being created inside the game environment, pass in either the path to a saved model or None
+    train_net(None, params, weights, path, trainFrames, i)
+
 
 
 
@@ -232,5 +325,5 @@ if __name__ == "__main__":
             "buffer": 50000,
             "nn": nn_param
         }
-        model = neural_net(NUM_INPUT, nn_param)
+        model = neural_net(NUM_INPUT, nn_param,3)
         train_net(model, params, weights, path, TRAIN_FRAMES)
