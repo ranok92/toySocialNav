@@ -4,6 +4,7 @@
 import numpy as np
 import math
 import pygame
+
 #from flat_game import ballgamepyg as BE
 '''
 the features extracted here are suggested by the paper : 
@@ -126,6 +127,42 @@ def  speedOrientationFeatures(stateInfo , obstacle_List , agent_rad , agent_vel)
     #columns - relative speed bins
     return phi_O
 
+def calcDistanceFromGoal(stateInfo , binDist):
+
+    agent_pos = stateInfo[0]
+    goal_pos = stateInfo[1]
+
+    dist = np.hypot(agent_pos[0]-goal_pos[0],agent_pos[1]-goal_pos[1])
+
+    dist = math.floor(dist/binDist)
+
+    if dist>5:
+        return np.asarray([5])
+    else:
+        return np.asarray([dist])
+
+def relativeGoalPos(state):
+
+    pos_vector = np.zeros(4)
+    agent_pos= state[0]
+    goal_pos = state[1]
+    xindicator = goal_pos[0] - agent_pos[0]
+    yindicator = goal_pos[1] - agent_pos[1]
+    base_vector = [0,1]
+    angle = angle_between(base_vector,(xindicator,yindicator))
+
+    if angle < math.pi/4:
+        pos_vector[0] =1
+    elif angle > math.pi/4 and angle < math.pi*3/4:
+        if xindicator>0:
+            pos_vector[1] = 1
+        else:
+            pos_vector[3] = 1
+    else:
+        pos_vector[2] = 1
+
+    return pos_vector
+
 
 
 def socialForcesFeatures(stateInfo, obstacle_List , agent_rad , agent_vel):
@@ -175,11 +212,11 @@ def renderObstacle(gameDisplay , color , obs):
 
 
 
-def visualizeEnvironment(agent_pos,obstacle_List , agent_rad ,agent_vel):
+def visualizeEnvironment(agent_pos,goal_pos,obstacle_List , agent_rad ,agent_vel):
     pygame.init()
     clock = pygame.time.Clock()
-    height = 500
-    width = 500
+    height = ENVIRONMENT_SIZE
+    width = ENVIRONMENT_SIZE
     red = (255,0,0)
     green = (0,255,0)
     blue = (0,0,255)
@@ -194,6 +231,8 @@ def visualizeEnvironment(agent_pos,obstacle_List , agent_rad ,agent_vel):
     # draw agent
     pygame.draw.circle(gameDisplay, black, (int(agent_pos[0]), int(agent_pos[1])), agent_rad)
     mag = 4 # increase mag if the orientation indicator is too small
+
+    pygame.draw.circle(gameDisplay, green , (int(goal_pos[0]) , int(goal_pos[1])), 10)
     # draw agent orientation
     pygame.draw.line(gameDisplay, blue , [agent_pos[0],agent_pos[1]], [(agent_pos[0]+mag*agent_vel[0]),(agent_pos[1]+mag*agent_vel[1])] ,1)
     #draw orientation lines ??
@@ -204,15 +243,16 @@ def visualizeEnvironment(agent_pos,obstacle_List , agent_rad ,agent_vel):
 
 def featureExtractor(state, ObstacleList,agent_vel,agent_rad):
 
-    featureVector = []
+    distance_bin = 20 # 20,40,60,80 anything more than that
+    distanceFromGoal = calcDistanceFromGoal(state,distance_bin)
+    goal_pos = relativeGoalPos(state)
+    #dFeatures = densityFeatures(state, ObstacleList , agent_rad, 10)
+    #orSpeedFeat = speedOrientationFeatures(state, ObstacleList , agent_rad , agent_vel)
+    #sfFeatures = socialForcesFeatures(state,ObstacleList,agent_rad,agent_vel)
 
-    dFeatures = densityFeatures(state, ObstacleList , agent_rad, 10)
-    orSpeedFeat = speedOrientationFeatures(state, ObstacleList , agent_rad , agent_vel)
-    sfFeatures = socialForcesFeatures(state,ObstacleList,agent_rad,agent_vel)
-
-    spdor = np.reshape(orSpeedFeat,orSpeedFeat.shape[0]*orSpeedFeat.shape[1])
-    finalFeat = np.concatenate((dFeatures,spdor,sfFeatures))
-
+    #spdor = np.reshape(orSpeedFeat,orSpeedFeat.shape[0]*orSpeedFeat.shape[1])
+    finalFeat = np.concatenate((distanceFromGoal,goal_pos))#,spdor,sfFeatures))
+    #finalFeat = distanceFromGoal
     return finalFeat
     #print finalFeat.shape
 
@@ -223,6 +263,7 @@ if __name__=='__main__':
     obstacle_loc_list = [(11,30),(200,150),(180,150),(1,90)]
     obstacle_vel_list = [(8,3),(0,3),(7,0),(1,9)]
     agent_pos = (200,200)
+    goal_pos = (200,100)
     agent_vel = (0,4)
     agent_rad = 5
     obstacle_List = []
@@ -232,13 +273,16 @@ if __name__=='__main__':
 
     state = []
     state.append(agent_pos) #all the other stuff are taken from the obstacleList info
-    print 'Densitysdd',densityFeatures(state, obstacle_List ,agent_rad , 10)
-    print 'SpeedOrientation',speedOrientationFeatures(state, obstacle_List , agent_rad , agent_vel)
-    print 'Socialforces',socialForcesFeatures(state,obstacle_List,agent_rad,agent_vel)
-    #while True:
-    #    visualizeEnvironment(agent_pos,obstacle_List,agent_rad,agent_vel)
+    state.append(goal_pos)
+ #   print 'Densitysdd',densityFeatures(state, obstacle_List ,agent_rad , 10)
+ #   print 'SpeedOrientation',speedOrientationFeatures(state, obstacle_List , agent_rad , agent_vel)
+ #   print 'Socialforces',socialForcesFeatures(state,obstacle_List,agent_rad,agent_vel)
+#    print 'Distance from goal',state[2]
+    print featureExtractor(state,obstacle_List,agent_vel,agent_rad)
+    while True:
+        visualizeEnvironment(agent_pos,goal_pos ,obstacle_List,agent_rad,agent_vel)
 
-    featureExtractor(state,obstacle_List,agent_vel, agent_rad)
+    print featureExtractor(state,obstacle_List,agent_vel, agent_rad)
 
 
 
