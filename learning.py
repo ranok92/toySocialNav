@@ -4,16 +4,20 @@ import csv
 from nn import Neural_net as neural_net
 import os.path
 import timeit
-
+import math
+import matplotlib.pyplot as plt
+import os
+import datetime
 import torch.optim as optim
 import torch.nn as NN
 import torch
+#import ballenv_pygame as BEG
 from flat_game import ballgamepyg as BE
-NUM_INPUT = 44
-GAMMA = 0.9  # Forgetting.
+NUM_INPUT = 5
+GAMMA = 0.99  # Forgetting.
 TUNING = False  # If False, just use arbitrary, pre-selected params.
-TRAIN_FRAMES = 100000 # to train for 100K frames in total
-
+TRAIN_FRAMES = 1000 # to train for 100K frames in total
+UPDATE_TARGET = 20 #update the target network after 20 frames
 import playing
 
 
@@ -28,13 +32,21 @@ import playing
 
 #model = path to model or none if there is no model
 
-def train_net(model_path, params, weights, path, trainFrames,i):
+def train_net(model_path, params, weights, path, trainFrames,i,FEATSIZE, irl = True):
+
 
     print "start Training . . ."
     filename = params_to_filename(params)
-
+    curDay = str(datetime.datetime.now().date())
+    curtime = str(datetime.datetime.now().time())
+    basePath = 'saved-models_'+ path +'/evaluatedPoliciesTest/'
+    subPath = curDay + '/' + curtime + '/'
+    curDir = basePath + subPath
+    os.makedirs(curDir)
+    if os.path.exists(curDir):
+        print "YES"
     observe = 100  # Number of frames to observe before training.
-    epsilon = 1
+    epsilon = .5
     train_frames = trainFrames  # Number of frames to play. 
     batchSize = params['batchSize']
     buffer = params['buffer']
@@ -47,14 +59,26 @@ def train_net(model_path, params, weights, path, trainFrames,i):
     replay = []  # stores tuples of (S, A, R, S').
 
     loss_log = []
-
+    loss_plot = []
 
 
     #Make changes here - read from a file
     # Create a new game instance.
-    game = BE.createBoardIRL(saved_model=model_path , weights = weights)
 
-    criterion = NN.MSELoss()
+
+    game = BE.createBoardIRL(sensor_size=FEATSIZE,display= False, saved_model=model_path , weights = weights , hidden_layers= params['nn'])
+
+
+    #create the target network
+    targetNetwork = neural_net(FEATSIZE , params['nn'],4)
+    stepcounter = 0 #keeps track of how many steps the learning network has taken ahead of the target network
+    UPDATETARGET = 50 #no of times after which the target network needs to be updated
+    targetNetwork.load_state_dict(game.agentBrain.state_dict())
+    targetNetwork.eval()
+    targetNetwork.cuda()
+
+    criterion = NN.SmoothL1Loss() #huber loss
+    #criterion = NN.MSELoss()
     optimizer = optim.RMSprop(game.agentBrain.parameters() , lr = .001)
     # Get initial state by doing nothing and getting the state.
     #_, state, temp1 = game_state.frame_step((2))
@@ -67,7 +91,13 @@ def train_net(model_path, params, weights, path, trainFrames,i):
 
     # Run the frames.
     while t < train_frames:
-
+        if t%2000==0:
+            print t
+            plt.figure()
+            plt.plot(loss_plot)
+            pltfile = 'saved_plots/'+'smallexperiment/'+'featsize-'+str(FEATSIZE)+str(i)+'-'+'epoch'+str(t)
+            plt.savefig(pltfile+'.png')
+            #playing.test_model(weights, )
         t += 1
         car_distance += 1
 
@@ -108,8 +138,10 @@ def train_net(model_path, params, weights, path, trainFrames,i):
             minibatch = random.sample(replay, batchSize)
 
             # Get training values.
-            X_train, y_train = process_minibatch(minibatch, game.agentBrain) #instead of the model
+            X_train, y_train = process_minibatch(minibatch, game.agentBrain,targetNetwork) #instead of the model
 
+            #print 'Xtrain',X_train
+            #print 'y_train', y_train
 
             #print "Printing from train and test in learning.py :"
             #print type(X_train) , X_train.size
@@ -125,7 +157,7 @@ def train_net(model_path, params, weights, path, trainFrames,i):
             #change the train method from keras to pytorch
 
 
-            optimizer.zero_grad()
+
 
 
             #X_train has to be a tensor of size n x 44 x 1
@@ -135,11 +167,21 @@ def train_net(model_path, params, weights, path, trainFrames,i):
             output = game.agentBrain(X_train)
             loss = criterion(output , y_train)
 
+            optimizer.zero_grad()
             loss.backward()
             #print loss.item()
             #print type(loss.item())
             optimizer.step()
+            stepcounter+=1
+
+            if stepcounter==UPDATETARGET:
+                targetNetwork.load_state_dict(game.agentBrain.state_dict())
+                stepcounter = 0
+                #print 'Updated'
+
+
             loss_log.append([t,loss.item()])
+            loss_plot.append(loss.item())
 
         # Update the starting state with S'.
         state = new_state
@@ -166,24 +208,28 @@ def train_net(model_path, params, weights, path, trainFrames,i):
                   #(max_car_distance, t, epsilon, car_distance, fps))
 
             # Reset.
+            game.reset()
             car_distance = 0
             start_time = timeit.default_timer()
 
         # Save the model 
-        if t % train_frames == 0:
+        if t % 2000 == 0:
 
             #game.agentBrain.save_weights('saved-models_'+ path +'/evaluatedPolicies/'+str(i)+'-'+ filename + '-' +
              #                  str(t) + '.h5',
              #                  overwrite=True)
-            torch.save(game.agentBrain.state_dict(),'saved-models_'+ path +'/evaluatedPolicies/'+str(i)+'-'+ filename + '-' + str(t) + '.h5', )
+            torch.save(game.agentBrain.state_dict(),'saved-models_'+ path +'/evaluatedPoliciesTest/'+subPath+str(i)+'-'+ filename + '-' + str(t) + '.h5', )
+            savedFilename = 'saved-models_'+ path +'/evaluatedPoliciesTest/'+subPath+str(i)+'-'+ filename + '-' + str(t) + '.h5'
             with open('results/model_paths.txt','w') as ff:
-                ff.write('saved-models_'+ path +'/evaluatedPolicies/'+str(i)+'-'+ filename + '-' + str(t) + '.h5\n')
+                ff.write('saved-models_'+ path +'/evaluatedPoliciesTest/'+subPath+str(i)+'-'+ filename + '-' + str(t) + '.h5\n')
                 ff.close()
             print("Saving model %s - %d" % (filename, t))
 
     # Log results after we're done all frames.
     log_results(filename, data_collect, loss_log,i)
-    print "Testing the model :"
+    #print "Testing the model :"
+
+    return savedFilename
 
 
 
@@ -196,13 +242,13 @@ def log_results(filename, data_collect, loss_log,i):
 
     with open('results/sonar-frames/loss_data-' + filename +'_'+str(i)+ '.csv', 'w') as lf:
         wr = csv.writer(lf)
-        print loss_log
-        print type(loss_log)
+        #print loss_log
+        #print type(loss_log)
         for loss_item in loss_log:
             wr.writerow(loss_item)
 
 
-def process_minibatch(minibatch, model):
+def process_minibatch(minibatch, model ,targetNetwork):
     #here the model is the game.agentBrain
     """This does the heavy lifting, aka, the training. It's super jacked."""
     X_train = []
@@ -214,9 +260,11 @@ def process_minibatch(minibatch, model):
         # Get stored values.
         old_state_m, action_m, reward_m, new_state_m = memory
         # Get prediction on old state.
+
+
         old_qval = model(old_state_m)
         # Get prediction on new state.
-        newQ = model(new_state_m)
+        newQ = targetNetwork(new_state_m)
         # Get our best move. I think?
         #print "The newQ :", newQ
 
@@ -232,7 +280,7 @@ def process_minibatch(minibatch, model):
             #update = (reward_m + (GAMMA * maxQ))
         #else:  # terminal state
             #update = reward_m
-        if new_state_m[4] == 1:
+        if new_state_m[3] == 1:
             update = reward_m
         else:  # non-terminal state
             update = (reward_m + (GAMMA * maxQ))
@@ -248,7 +296,7 @@ def process_minibatch(minibatch, model):
 
 
 def params_to_filename(params):
-    return str(params['nn'][0]) + '-' + str(params['nn'][1]) + '-' + \
+    return str(params['nn'][0]) + '-' + str(params['nn'][1])+ '-'+ str(params['nn'][1]) + '-' + \
             str(params['batchSize']) + '-' + str(params['buffer'])
 
 
@@ -269,7 +317,7 @@ def launch_learn(params):
 
 
 def get_saved_modelFilename():
-    nn_param = [164, 150]
+    nn_param = [512, 1024 , 128]
     params = {
         "batchSize": 100,
         "buffer": 50000,
@@ -279,8 +327,8 @@ def get_saved_modelFilename():
 
 
 
-def IRL_helper(weights, path, trainFrames, i):
-    nn_param = [164, 150]
+def IRL_helper(weights, path, trainFrames, i,FEATSIZE):
+    nn_param = [512, 1024 , 128]
     params = {
         "batchSize": 100,
         "buffer": 50000,
@@ -289,41 +337,33 @@ def IRL_helper(weights, path, trainFrames, i):
     ####model = neural_net(NUM_INPUT, nn_param , num_actions=4)
 
     #train_net() - the first parameter used to be the model, but now as because the model
-    # is being created inside the game environment, pass in either the path to a saved model or None
-    train_net(None, params, weights, path, trainFrames, i)
+    # is being created inside the game environment, pass in either the path to a '/home/abhisek/Study/Robotics/toySocialNav/saved-models_red/eval'/home/abhisek/Study/Robotics/toySocialNav/saved-models_red/eval'/home/abhisek/Study/Robotics/toySocialNav/saved-models_red/eval'/home/abhisek/Study/Robotics/toySocialNav/saved-models_red/evaluatedPolicies/17-512-1024-100-50000-10011.h5'uatedPolicies/17-512-1024-100-50000-10011.h5'uatedPolicies/17-512-1024-100-50000-10011.h5'uatedPolicies/17-512-1024-100-50000-10011.h5'saved model or None
+    #train_net method returns the path in which the model dictionary is saved
+    return train_net(None, params, weights, path, trainFrames, i,FEATSIZE)
 
-
+'/home/abhisek/Study/Robotics/toySocialNav/saved-models_red/evaluatedPolicies/17-512-1024-100-50000-10011.h5'
 
 
 if __name__ == "__main__":
-    weights = [ 0.04924175 ,-0.36950358 ,-0.15510825 ,-0.65179867 , 0.2985827 , -0.23237454 , 0.21222881 ,-0.47323531]
-    path = 'default'
+    weights = [-.4, 0, 0 , 0 ,0]
+    path = 'train_from_main'
+    FEATSIZE = 4
     if TUNING:
         param_list = []
-        nn_params = [[164, 150], [256, 256],
-                     [512, 512], [1000, 1000]]
-        batchSizes = [40, 100, 400]
-        buffers = [10000, 50000]
-
-        for nn_param in nn_params:
-            for batchSize in batchSizes:
-                for buffer in buffers:
-                    params = {
-                        "batchSize": batchSize,
-                        "buffer": buffer,
-                        "nn": nn_param
-                    }
-                    param_list.append(params)
-
-        for param_set in param_list:
-            launch_learn(param_set)
-
-    else:
-        nn_param = [164, 150]
+        nn_param = [32 , 32]
         params = {
-            "batchSize": 100,
-            "buffer": 50000,
-            "nn": nn_param
+        "batchSize": 100,
+        "buffer": 50000,
+        "nn": nn_param
+    }
+    else:
+        nn_param = [32,32]
+        params = {
+        "batchSize": 100,
+        "buffer": 50000,
+        "nn": nn_param
         }
-        model = neural_net(NUM_INPUT, nn_param,3)
-        train_net(model, params, weights, path, TRAIN_FRAMES)
+
+        #model_path = '/home/abhisek/Study/Robotics/toySocialNav/2-512--1024-128-100-50000-98000.h5'
+
+        train_net(None, params, weights, path, 1000000,111,FEATSIZE)

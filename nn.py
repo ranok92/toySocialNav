@@ -16,12 +16,54 @@ class Neural_net(nn.Module):
 
         super(Neural_net,self).__init__()
 
+        #print 'Number of sensors',num_sensors
+        self.fc1 = nn.Linear(num_sensors,params[0])
+        self.bn1 = nn.BatchNorm1d(params[0])
+        self.fc2 = nn.Linear(params[0],params[1])
+        self.bn2 = nn.BatchNorm1d(params[1])
+        #self.fc3 = nn.Linear(params[1],params[2])
+        self.bn3 = nn.BatchNorm1d(params[1])
+        self.fc3 = nn.Linear(params[1], num_actions)
 
+
+
+
+
+    def forward(self,x):
+
+        #x = np.transpose(x)
+
+        x = Variable(torch.from_numpy(x))
+        x = x.type(torch.cuda.FloatTensor)
+
+
+        #print x.size()
+
+        # if len(x.size()) == 2:
+        #
+        #     x = F.relu(self.bn1(self.fc1(x)))
+        #     x = F.relu(self.bn2(self.fc2(x)))
+        #     x = F.relu(self.bn3(self.fc3(x)))
+        #     x = self.fc4(x)
+        #
+        #
+        # else:
+
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        #x = F.relu(self.fc3(x))
+        x = self.fc3(x)
+        return x
+
+
+'''
         self.fc1 = nn.Linear(num_sensors,params[0])
         self.drop1 = nn.Dropout(.2)
         self.fc2 = nn.Linear(params[0],params[1])
         self.drop2 = nn.Dropout(.2)
-        self.fc3 = nn.Linear(params[1],num_actions)
+        self.fc3 = nn.Linear(params[1],params[2])
+        self.drop3 = nn.Dropout(.2)
+        self.fc4 = nn.Linear(params[2], num_actions)
 
     def forward(self,x):
 
@@ -31,59 +73,11 @@ class Neural_net(nn.Module):
         x = self.drop1(x)
         x = F.relu(self.fc2(x))
         x = self.drop2(x)
-        x = self.fc3(x)
+        x = F.relu(self.fc3(x))
+        x = self.drop3(x)
+        x = self.fc4(x)
+
 
         return x
 
-'''
-class LossHistory(Callback):
-    def on_train_begin(self, logs={}):
-        self.losses = []
-
-    def on_batch_end(self, batch, logs={}):
-        self.losses.append(logs.get('loss'))
-        
-        
-
-def neural_net(num_sensors, params, load=''):
-    model = Sequential()
-
-    # First layer.
-    model.add(Dense(
-        params[0], init='lecun_uniform', input_shape=(num_sensors,)
-    ))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.2))
-
-    # Second layer.
-    model.add(Dense(params[1], init='lecun_uniform'))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.2))
-
-    # Output layer.
-    model.add(Dense(3, init='lecun_uniform')) #!
-    model.add(Activation('linear'))
-
-    rms = RMSprop()
-    model.compile(loss='mse', optimizer=rms)
-
-    if load:
-        model.load_weights(load)
-
-    return model
-
-
-def lstm_net(num_sensors, load=False):
-    model = Sequential()
-    model.add(LSTM(
-        output_dim=512, input_dim=num_sensors, return_sequences=True
-    ))
-    model.add(Dropout(0.2))
-    model.add(LSTM(output_dim=512, input_dim=512, return_sequences=False))
-    model.add(Dropout(0.2))
-    model.add(Dense(output_dim=3, input_dim=512)) #!
-    model.add(Activation("linear"))
-    model.compile(loss="mean_squared_error", optimizer="rmsprop")
-
-    return model
 '''
