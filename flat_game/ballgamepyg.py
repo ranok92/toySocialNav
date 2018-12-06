@@ -4,17 +4,17 @@ import math
 import gym
 import torch
 import random
-
+import featureExtractor
 import os
 from nn import Neural_net as NN
 random.seed(4)
-_screen_height = 500
-_screen_width = 500
+_screen_height = 100
+_screen_width = 100
 _stripobsx = 0
 _stripobsy = 20
-_stripgoalx = 470
+_stripgoalx = 70
 _stripgoaly = 20
-_stripagentx = 480
+_stripagentx = 80
 _stripagenty = 10
 _max_agent_speed = 5
 weights = [1,1,1,1]
@@ -23,15 +23,31 @@ weights = [1,1,1,1]
 class Obstacle:
     goals = None
 
-    def __init__(self,id):
+    def __init__(self,id,xpos = None , ypos = None , xvel = None , yvel = None, radius = None):
         self.id = id
-        self.x = np.random.randint(_stripobsx,_screen_width-_stripobsx)
-        self.y = np.random.randint(_stripobsy,_screen_height-_stripobsy)
-        self.rad = 10
+        if xpos==None:
+            self.x = np.random.randint(_stripobsx,_screen_width-_stripobsx)
+        else:
+            self.x = xpos
+
+        if ypos==None:
+            self.y = np.random.randint(_stripobsy,_screen_height-_stripobsy)
+        else:
+            self.y = ypos
+        if radius==None:
+            self.rad = 20
+        else:
+            self.rad = radius
         self.curr_goal = None #this is a tuple (x,y)
-        self.speed =  0
-        self.vel_x = 0
-        self.vel_y = 0
+        if xvel == None:
+            self.vel_x = 0
+        else:
+            self.vel_x = xvel
+        if yvel == None:
+            self.vel_y = 0
+        else:
+            self.vel_y = yvel
+
         self.goal_change_counter = None
         self.curr_counter = 0
 
@@ -39,9 +55,10 @@ class Obstacle:
 
 
 class createBoardIRL():
+    #saved model contains the state dictionary and not the actual model
+    def __init__(self, saved_model = None, sensor_size = None, display = False ,number_of_actions = 4 , hidden_layers = [256 , 256] ,number_of_height = _screen_height , weights = weights ,  width = _screen_width , agent_radius = 10 , static_obstacles = 1 , dynamic_obstacles = 0 , static_obstacle_radius = 10 , dynamic_obstacle_radius = 0 , obstacle_speed_list = []):
 
-    def __init__(self, saved_model = None, display = False ,number_of_actions = 4 , hidden_layers = [256 , 256] ,number_of_height = _screen_height , weights = weights ,  width = _screen_width , agent_radius = 10 , static_obstacles = 20 , dynamic_obstacles = 0 , static_obstacle_radius = 10 , dynamic_obstacle_radius = 0 , obstacle_speed_list = []):
-
+        pygame.init()
         self.clock = pygame.time.Clock()
         self.rewardWeights = weights  #numpy array
         self.display = display
@@ -51,7 +68,7 @@ class createBoardIRL():
         self.agent_radius = agent_radius
 
 
-        self.sensorArraysize = 44
+        self.sensorArraysize = sensor_size
 
 
         self.size_action_space = number_of_actions
@@ -65,7 +82,7 @@ class createBoardIRL():
         self.rad_static_obstacles = static_obstacle_radius
         self.rad_dynamic_obstacles = dynamic_obstacle_radius
         self.agent_action_flag = False
-
+        self.agent_action_keyboard = [False for i in range(4)]
 
         self.agent_x = None
         self.agent_y = None
@@ -76,7 +93,7 @@ class createBoardIRL():
         self.goal_x = None
         self.goal_y = None
         self.old_dist = None
-        self.goal_threshold = 5
+        self.goal_threshold = 20
         self.total_distance = None
         self.obstacle_speed_list = obstacle_speed_list
         self.static_obstacle_list = []
@@ -225,41 +242,78 @@ class createBoardIRL():
 
 
 
-    def take_action_from_user(self):
+    def take_action_from_userMouse(self):
         (a, b, c) = pygame.mouse.get_pressed()
 
         x = 0.0001
         y = 0.0001
+        print "heresa"
+    #while (True):
         for event in pygame.event.get():
             if event.type == pygame.MOUSEBUTTONDOWN:
+                print "heare"
                 self.agent_action_flag = True
-            if event.type == pygame.MOUSEBUTTONUP:
-                self.agent_action_flag = False
+                if event.type == pygame.MOUSEBUTTONUP:
+                    self.agent_action_flag = False
         if self.agent_action_flag:
             (x, y) = pygame.mouse.get_pos()
+
             x = x - self.agent_x
             y = y - self.agent_y
             if np.hypot(x, y) > _max_agent_speed:
                 normalizer = _max_agent_speed / (np.hypot(x, y))
-            # print x,y
+        # print x,y
             else:
                 normalizer = 1
+            print (x * normalizer, y * normalizer)
             return (x * normalizer, y * normalizer)
 
         return (0, 0)
 
+    #a simplified version where there are just 4actions
+    def take_action_from_userKeyboard(self):
 
+        while (True):
+            for event in pygame.event.get():
+                if event.type == pygame.KEYDOWN:
+                    key = pygame.key.get_pressed()
+                    if key[pygame.K_UP]:
+                        self.agent_action_keyboard[0]=True
+                    if key[pygame.K_RIGHT]:
+                        self.agent_action_keyboard[1]=True
+                    if key[pygame.K_LEFT]:
+                        self.agent_action_keyboard[3]=True
+                    if key[pygame.K_DOWN]:
+                        self.agent_action_keyboard[2]=True
 
+                if event.type == pygame.KEYUP:
+
+                    if event.key == pygame.K_UP:
+                        self.agent_action_keyboard[0]=False
+                    if event.key == pygame.K_RIGHT:
+                        self.agent_action_keyboard[1]=False
+                    if event.key == pygame.K_LEFT:
+                        self.agent_action_keyboard[3]=False
+                    if event.key == pygame.K_DOWN:
+                        self.agent_action_keyboard[2]=False
+
+            for i in range(len(self.agent_action_keyboard)):
+                if self.agent_action_keyboard[i]==True:
+                    return i
+
+        return None
     #returns the action that has the highest qvalue
     def gen_action_from_agent(self):
 
 
-        action = self.agentBrain(self.sensor_readings)
+        qvalues = self.agentBrain(self.sensor_readings)
 
-        action = action.cpu().detach().numpy()
-        return np.argmax(action)
+        qvalues = qvalues.cpu().detach().numpy()
+        return np.argmax(qvalues)
 
-
+    #this method takes in the result from gen_action_from_agent()
+    #and converts into a tuple (x,y) where (x,y) is the amount the
+    #agent will move in the x and y direction respectively
     def agent_action_to_WorldAction(self, action):
 
         action_angle = 2*math.pi * action/self.size_action_space
@@ -270,6 +324,20 @@ class createBoardIRL():
         action_taken = np.matmul(rot_matrix, action_vector)
 
         return action_taken
+
+    #a simplified version: only 4 ways to move
+    #action (int) can attain values from 0-3, and based on that
+    #the agent moves left right front or back
+    def agent_action_to_WorldActionSimplified(self,action):
+        if action==0: #move front
+            return np.asarray([0,-5])
+        if action==1: #move right
+            return np.asarray([5,0])
+        if action==2: #move down
+            return np.asarray([0,5])
+        if action==3: #move left
+            return np.asarray([-5,0])
+
 
 
 
@@ -289,9 +357,12 @@ class createBoardIRL():
     def reset(self):
         self.agent_action_flag = False
         if self.display:
+
             self.gameDisplay = pygame.display.set_mode((self.width, self.height))
             pygame.display.set_caption('social navigation world')
             self.gameDisplay.fill(self.white)
+
+
 
         self.obstacle_list = []
         self.goal_x = self.generate_randomval(_screen_width - _stripgoalx, _screen_width)
@@ -337,7 +408,8 @@ class createBoardIRL():
 
         self.total_distance = self.calculate_distance(self.state[0], self.state[1])
 
-        self.sensor_readings = self.state_to_sensorReadings()
+        #self.sensor_readings = self.state_to_sensorReadings()
+        self.sensor_readings = featureExtractor.featureExtractor(self.state,self.obstacle_list,(self.agent_x_vel,self.agent_y_vel),self.agent_radius)
         #self.agentBrain = NN(self.state_to_sensorReadings().size , self.hidden_layers,self.size_action_space)
 
         return np.array(self.state)
@@ -407,11 +479,13 @@ class createBoardIRL():
             obs.vel_y = (y/magnitude)*obs.speed
             obs.y = obs.y + obs.vel_y
 
-            self.state[4+len(self.no_static_obstacles)] = (obs.x , obs.y)
+            self.state[4+len(self.no_static_obstacles)+i] = (obs.x , obs.y)
 
 
-        self.sensor_readings = self.state_to_sensorReadings()
-
+        self.sensor_readings = featureExtractor.featureExtractor(self.state,self.obstacle_list,(self.agent_x_vel,self.agent_y_vel),self.agent_radius)
+        if self.display:
+            self.render()
+        #print self.sensor_readings
 
 
         return np.array(self.state), reward, done, {}
@@ -436,6 +510,10 @@ class createBoardIRL():
             cur_dist = self.calculate_distance(self.state[0], self.state[1])
 
             diff_dist = self.old_dist - cur_dist
+            #rint self.rewardWeights.size
+            #print self.sensor_readings.size
+            #print 'reward_weights',self.rewardWeights.shape
+            #print 'sensor_readings',self.sensor_readings.shape
             reward = np.dot(self.rewardWeights , self.sensor_readings)
             self.total_reward_accumulated += reward
             return reward, done
@@ -476,17 +554,18 @@ class createBoardIRL():
 
 if __name__ == '__main__':
     print "ddd"
-    cb = createBoardIRL(weights=np.random.rand(44))
+    cb = createBoardIRL(weights=np.random.rand(15) , display=True)
     for i in range(100):
         print "Here"
         cb.reset()
         for j in range(300000):
             if cb.display:
                 cb.render()
-            #action = cb.take_action_from_user()
-            action = cb.gen_action_from_agent()
-            action = cb.agent_action_to_WorldAction(action)
-            #print action
+            action = cb.take_action_from_userKeyboard()
+
+            #action = cb.gen_action_from_agent()
+            action = cb.agent_action_to_WorldActionSimplified(action)
+            print action
             #print cb.sensor_readings
             state ,reward ,done , _ = cb.step(action)
             #print reward
