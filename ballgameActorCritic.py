@@ -25,6 +25,50 @@ plt.ion()
 
 SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
 
+
+
+class HistoryBuffer():
+
+    def __init__(self,bufferSize = 10):
+
+        self.bufferSize = bufferSize
+        self.buffer = []
+
+    #add a state to the history buffer
+    #each state is assumed to be of shape ( 1 x S )
+    def addState(self , state):
+
+        if len(self.buffer) >= self.bufferSize:
+
+            del self.buffer[0] #remove the oldest state
+        self.buffer.append(state.cpu().numpy())
+
+
+    #returns the 10 states in the buffer in the form of a torch tensor in the order in which they
+    #were encountered
+    def getHistory(self):
+
+        arrSize = self.buffer[0].shape[1]
+        #print 'ArraySize',arrSize
+        arrayHist = np.asarray(self.buffer)
+
+        arrayHist = np.reshape(arrayHist , (1,arrSize*self.bufferSize))
+        state = torch.from_numpy(arrayHist).to(device)
+        state = state.type(torch.cuda.FloatTensor)
+        #state = state.unsqueeze(0)
+
+        return state
+
+
+
+
+
+
+
+
+
+
+
 def block_to_arrpos(window_size,x,y):
 
     a = (window_size**2-1)/2
@@ -136,8 +180,9 @@ class Policy(nn.Module):
         state_values = self.value_head(x)
         return F.softmax(action_scores, dim=-1), state_values
 
-
-policy = Policy(inputSize=20)
+historySize = 10
+inpsize = 29 * historySize
+policy = Policy(inputSize=inpsize , hidden= 1024)
 policy.cuda()
 optimizer = optim.Adam(policy.parameters(), lr=1e-2)
 eps = np.finfo(np.float32).eps.item()
@@ -186,6 +231,9 @@ def finish_episode():
     optimizer.step()
     del policy.rewards[:]
     del policy.saved_actions[:]
+
+
+
 
 def testmodel(modelpath, iterations):
 
@@ -242,7 +290,17 @@ log_interval = 10
 def main():
 
     #****information to store the model
-    filename = 'actorCriticFeaturesFull'
+
+    historySize = 10
+    hbuffer = HistoryBuffer(historySize)
+
+    #actorCriticWindow-windowsize - state obtained from local window
+    #actorCriticFeaures - state obtained from features
+    #actirCriticFeaturesFull - state obtained from using all features
+    #actorCriticXXXHistory  - state obtained from any of the above methods and using a history buffer
+
+
+    filename = 'actorCriticWindow5History'
     curDay = str(datetime.datetime.now().date())
     curtime = str(datetime.datetime.now().time())
     basePath = 'saved-models_trainBlock' +'/evaluatedPoliciesTest/'
@@ -267,26 +325,40 @@ def main():
         state = env.reset()
         #env.render()
         print 'Starting episode :', i_episode
-        #state = get_state_BallEnv(state)
-        state = env.sensor_readings
-        for t in range(500):  # Don't infinite loop while learning
-            action = select_action(state,policy)
-            #print action
-            if action!=None:
+        state = get_state_BallEnv(state)
+        hbuffer.addState(state)
+        #state = hbuffer.getHistory()
+        #state = env.sensor_readings
+        for t in range(500):  # Don't create infinite loop while learning
+
+            if t <= historySize:
+
+                action = np.random.randint(0,9)
                 action = move_list[action]
-                #action = agent_action_to_WorldActionSimplified(action)
-                #print action
-                state, reward, done, _ = env.step(action)
-                #state = get_state_BallEnv(state)
-                state = env.sensor_readings
-                if i_episode%log_interval==0:
-                    env.render()
-                policy.rewards.append(reward)
-                if done:
-                    break
-                running_reward += reward
+                state, reward , done , _ = env.step(action)
+                state = get_state_BallEnv(state)
+                hbuffer.addState(state)
             else:
-                continue
+                state = hbuffer.getHistory()
+                action = select_action(state,policy)
+                #print action
+                if action!=None:
+                    action = move_list[action]
+                    #action = agent_action_to_WorldActionSimplified(action)
+                    #print action
+                    state, reward, done, _ = env.step(action)
+                    state = get_state_BallEnv(state)
+                    #state = env.sensor_readings
+                    hbuffer.addState(state)
+                    #state = hbuffer.getHistory()
+                    if i_episode%log_interval==0:
+                        env.render()
+                    policy.rewards.append(reward)
+                    if done:
+                        break
+                    running_reward += reward
+                else:
+                    continue
             #if t%500==0:
                 #print "T :",t
         #running_reward = running_reward * 0.99 + t * 0.01
@@ -318,3 +390,7 @@ if __name__ == '__main__':
     main()
     #model = '/home/abhisek/Study/Robotics/toySocialNav/saved-models_trainBlock/evaluatedPoliciesTest/2018-12-16/11:40:41.466716/610-actorCritic-610.h5'
     #testmodel(model,50)
+
+
+
+
